@@ -27,7 +27,7 @@ public class SftpYooAsset : AMenuExecute
     protected override Task _Execute(CancellationToken token)
     {
         var local_dir  = Settings.Current.yooasset_local_dir;
-        var remote_dir = Settings.Current.yooaset_remote_dir;
+        var remote_dir = Settings.Current.yooasset_remote_dir;
 
         if(string.IsNullOrEmpty(local_dir))
         {

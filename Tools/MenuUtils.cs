@@ -218,10 +218,12 @@ public static class MenuUtils
     {
         var selections = _SELECTION.GetSelection(path);
 
+        var path_display = string.IsNullOrEmpty(path) ? "/" : path;
+
         var table = new Table
         {
             Title = new TableTitle(
-                $"当前用户: [{CustomColor.Pink.ToHex()}]{Settings.Current.user_name}[/] 当前路径: [{CustomColor.Pink.ToHex()}]/{path}[/]"
+                $"当前用户: [{CustomColor.Pink.ToHex()}]{Settings.Current.user_name}[/] 当前路径: [{CustomColor.Pink.ToHex()}]{path_display}[/]"
             )
         };
 

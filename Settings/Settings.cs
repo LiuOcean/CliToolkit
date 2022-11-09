@@ -22,9 +22,9 @@ public class Settings : CommandSettings
     [Description("YooAsset 本地上传路径")]
     public string yooasset_local_dir { get; private set; }
 
-    [CommandOption("--yooasset_remove_dir")]
+    [CommandOption("--yooasset_remote_dir")]
     [Description("YooAsset 远端上传路径")]
-    public string yooaset_remote_dir { get; private set; }
+    public string yooasset_remote_dir { get; private set; }
 
     public void CheckPrompt()
     {
