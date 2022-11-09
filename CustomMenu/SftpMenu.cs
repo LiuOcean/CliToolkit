@@ -27,7 +27,7 @@ public class SftpYooAsset : AMenuExecute
     protected override Task _Execute(CancellationToken token)
     {
         var local_dir  = Settings.Current.yooasset_local_dir;
-        var remote_dir = Settings.Current.yooasset_remote_dir;
+        var remote_dir = Settings.Current.yooaset_remote_dir;
 
         if(string.IsNullOrEmpty(local_dir))
         {
@@ -108,7 +108,7 @@ public class SftpCat : AMenuExecute
 
         if(!string.IsNullOrEmpty(file))
         {
-            AnsiConsole.Write(new Panel(file) {Header = new PanelHeader(path)});
+            AnsiConsole.Write(new Panel(Markup.Escape(file)) {Header = new PanelHeader(path)});
         }
 
         return Task.CompletedTask;

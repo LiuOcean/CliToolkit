@@ -56,7 +56,7 @@ public class AutoConfigCat : AMenuExecute
                                           UseConverter(name => name.Replace(AutoConfigUtils.ROOT, ""))
         );
 
-        AnsiConsole.Write(new Panel(AutoConfigUtils.ReadFile(file)) {Header = new PanelHeader(file)});
+        AnsiConsole.Write(new Panel(Markup.Escape(AutoConfigUtils.ReadFile(file))) {Header = new PanelHeader(file)});
         return Task.CompletedTask;
     }
 }
