@@ -26,6 +26,10 @@ public class Settings : CommandSettings
     [Description("YooAsset 远端上传路径")]
     public string yooasset_remote_dir { get; private set; }
 
+    [CommandOption("--max_upload_client")]
+    [Description("最大客户端上传数量")]
+    public int max_upload_client { get; private set; } = 10;
+
     public void CheckPrompt()
     {
         Current = this;

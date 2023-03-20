@@ -1,49 +1,76 @@
+using System.Collections.Concurrent;
 using System.Text;
 using CliToolkit.AutoConfig;
+using CliToolkit.Commands;
 using Renci.SshNet;
 using Renci.SshNet.Sftp;
 using Spectre.Console;
 
 namespace CliToolkit.Tools;
 
-public static class SftpUtils
+public class SftpPool : IDisposable
 {
+    private static ConcurrentQueue<SftpPool> _pool = new();
+
     private const int BUFFER_SIZE = 4 * 1024;
 
-    private static SftpClient CLIENT
+    public SftpClient client { get; }
+
+    private SftpPool()
     {
-        get
+        var config = AutoConfigUtils.GetAutoConfig<SftpAutoConfig>();
+        client = new SftpClient(config.ip, config.user_name, config.password);
+
+        client.Connect();
+        client.BufferSize = BUFFER_SIZE;
+    }
+
+    public static void Prewarm()
+    {
+        for(int i = 0; i < Settings.Current.max_upload_client; i++)
         {
-            var config = AutoConfigUtils.GetAutoConfig<SftpAutoConfig>();
-
-            if(_CLIENT is not null)
-            {
-                if(!_CLIENT.IsConnected)
-                {
-                    goto Connect;
-                }
-
-                return _CLIENT;
-            }
-
-            var client = new SftpClient(config.ip, config.user_name, config.password);
-            _CLIENT = client;
-
-            Connect:
-            _CLIENT.Connect();
-            _CLIENT.BufferSize = BUFFER_SIZE;
-
-            return _CLIENT;
+            _pool.Enqueue(new SftpPool());
         }
     }
 
-    private static SftpClient? _CLIENT;
-
-    static SftpUtils()
+    public static SftpPool Get()
     {
-        // 保证在程序退出前, 断开 sftp 链接
-        AppDomain.CurrentDomain.ProcessExit += (_, _) => { _CLIENT?.Dispose(); };
+        if(!_pool.TryDequeue(out var pool))
+        {
+            return new SftpPool();
+        }
+
+        if(!pool.client.IsConnected)
+        {
+            pool.client.Connect();
+        }
+
+        return pool;
     }
+
+    public void Dispose() { _pool.Enqueue(this); }
+}
+
+public static class SftpUtils
+{
+    private static SftpClient DEFAULT
+    {
+        get
+        {
+            if(_default is {IsConnected: true})
+            {
+                return _default;
+            }
+
+            _default = SftpPool.Get().client;
+
+            return _default;
+        }
+    }
+
+    private static SftpClient? _default;
+
+    static SftpUtils() { SftpPool.Prewarm(); }
 
     #region Get
 
@@ -54,19 +81,19 @@ public static class SftpUtils
     /// <returns></returns>
     public static string ReadFile(string path)
     {
-        if(!CLIENT.Exists(path))
+        if(!DEFAULT.Exists(path))
         {
             return string.Empty;
         }
 
-        var file_info = CLIENT.Get(path);
+        var file_info = DEFAULT.Get(path);
 
         if(file_info.IsDirectory)
         {
             return string.Empty;
         }
 
-        return CLIENT.ReadAllText(path, Encoding.UTF8);
+        return DEFAULT.ReadAllText(path, Encoding.UTF8);
     }
 
     /// <summary>
@@ -76,7 +103,7 @@ public static class SftpUtils
     /// <returns></returns>
     public static async Task<IEnumerable<SftpFile>?> GetAllFileInfo(string working_dir = ".")
     {
-        return await CLIENT.ListDirectoryAsync(working_dir);
+        return await DEFAULT.ListDirectoryAsync(working_dir);
     }
 
     /// <summary>
@@ -86,7 +113,7 @@ public static class SftpUtils
     /// <param name="working_dir"></param>
     public static async Task GetAllFileInfoRecursive(List<SftpFile>? files, string working_dir = ".")
     {
-        foreach(var file in await CLIENT.ListDirectoryAsync(working_dir) ?? new List<SftpFile>())
+        foreach(var file in await DEFAULT.ListDirectoryAsync(working_dir) ?? new List<SftpFile>())
         {
             if(string.Equals(file.Name, ".") || string.Equals(file.Name, ".."))
             {
@@ -111,7 +138,7 @@ public static class SftpUtils
     /// <param name="working_dir"></param>
     public static async Task GetAllDirInfoRecursive(List<SftpFile>? files, string working_dir = ".")
     {
-        foreach(var file in await CLIENT.ListDirectoryAsync(working_dir) ?? new List<SftpFile>())
+        foreach(var file in await DEFAULT.ListDirectoryAsync(working_dir) ?? new List<SftpFile>())
         {
             if(string.Equals(file.Name, ".") || string.Equals(file.Name, ".."))
             {
@@ -134,12 +161,12 @@ public static class SftpUtils
 
     public static void Delete(string path)
     {
-        if(!CLIENT.Exists(path))
+        if(!DEFAULT.Exists(path))
         {
             return;
         }
 
-        var info = CLIENT.Get(path);
+        var info = DEFAULT.Get(path);
 
         if(info.IsDirectory)
         {
@@ -155,19 +182,19 @@ public static class SftpUtils
     /// 删除一个文件
     /// </summary>
     /// <param name="path"></param>
-    public static void DeleteFile(string path) { CLIENT.DeleteFile(path); }
+    public static void DeleteFile(string path) { DEFAULT.DeleteFile(path); }
 
     /// <summary>
     /// 删除一个文件夹
     /// </summary>
     /// <param name="path"></param>
-    public static void DeleteDirectory(string path) { CLIENT.DeleteDirectory(path); }
+    public static void DeleteDirectory(string path) { DEFAULT.DeleteDirectory(path); }
 
     #endregion
 
     #region Permision
 
-    public static void ChangePermission(string path, short permission) { CLIENT.ChangePermissions(path, permission); }
+    public static void ChangePermission(string path, short permission) { DEFAULT.ChangePermissions(path, permission); }
 
     #endregion
 
@@ -195,8 +222,6 @@ public static class SftpUtils
 
         FileInfo info = new FileInfo(local_path);
 
-        ServerDirSafeCheck(server_path);
-
         await Task.Run(
             () =>
             {
@@ -204,7 +229,11 @@ public static class SftpUtils
                 progress?.StartTask();
                 ulong last_size = 0;
 
-                CLIENT.UploadFile(
+                using var pool = SftpPool.Get();
+
+                ServerDirSafeCheck(pool.client, server_path);
+
+                pool.client.UploadFile(
                     fs,
                     server_path,
                     size =>
@@ -238,6 +267,9 @@ public static class SftpUtils
         int failed  = 0;
         int ignored = 0;
 
+        HashSet<Task> tasks    = new();
+        List<Task>    finished = new();
+
         foreach(var path in files)
         {
             FileInfo info = new FileInfo(path);
@@ -252,19 +284,52 @@ public static class SftpUtils
 
             try
             {
-                // TODO SFTP 多个文件同时上传没有跑通
-                await UploadFile(
-                    path,
-                    Path.Combine(server_path, info.Name),
-                    progress,
-                    permission
+                tasks.Add(
+                    UploadFile(
+                        path,
+                        Path.Combine(server_path, info.Name),
+                        progress,
+                        permission
+                    )
                 );
-                success++;
+
+                if(tasks.Count < Settings.Current.max_upload_client)
+                {
+                    continue;
+                }
+
+                await Task.WhenAny(tasks);
+
+                foreach(var task in tasks.Where(task => task.IsCompleted))
+                {
+                    finished.Add(task);
+
+                    if(task.Status == TaskStatus.Faulted)
+                    {
+                        failed++;
+                    }
+                    else
+                    {
+                        success++;
+                    }
+                }
+
+                foreach(var task in finished)
+                {
+                    tasks.Remove(task);
+                }
+
+                finished.Clear();
             }
             catch(Exception)
             {
                 failed++;
             }
+        }
+
+        if(tasks.Count > 0)
+        {
+            await Task.WhenAll(tasks);
         }
 
         return new Tuple<int, int, int>(success, ignored, failed);
@@ -287,7 +352,7 @@ public static class SftpUtils
     /// </summary>
     /// <param name="files"></param>
     /// <param name="server_dir"></param>
-    public static async Task UploadFilesWithProgress(IEnumerable<string> files, string server_dir)
+    public static async Task<bool> UploadFilesWithProgress(IEnumerable<string> files, string server_dir)
     {
         Tuple<int, int, int>? result = null;
 
@@ -310,6 +375,8 @@ public static class SftpUtils
                            AddItem("忽略", ignored, Color.Yellow).
                            AddItem("失败", failed,  Color.Red)
         );
+
+        return failed <= 0;
     }
 
     /// <summary>
@@ -336,7 +403,26 @@ public static class SftpUtils
             return;
         }
 
-        await UploadFilesWithProgress(diff_files, server_dir);
+        int retry = 3;
+
+        while(true)
+        {
+            var result = await UploadFilesWithProgress(diff_files, server_dir);
+
+            if(result)
+            {
+                break;
+            }
+
+            if(retry <= 0)
+            {
+                break;
+            }
+
+            retry--;
+
+            AnsiConsole.Write("上传失败, 重试中...");
+        }
     }
 
     #endregion
@@ -355,9 +441,14 @@ public static class SftpUtils
 
         Dictionary<string, SftpFile> remote_files = new();
 
-        foreach(var file in await CLIENT.ListDirectoryAsync(remote_dir) ?? new List<SftpFile>())
+        foreach(var file in await DEFAULT.ListDirectoryAsync(remote_dir) ?? new List<SftpFile>())
         {
-            string path = file.FullName.Replace($"{remote_dir}/", "");
+            string path = file.FullName.Replace($"{remote_dir}", "");
+
+            if(path.StartsWith("/"))
+            {
+                path = path.TrimStart('/');
+            }
 
             remote_files[path] = file;
         }
@@ -378,7 +469,12 @@ public static class SftpUtils
                 continue;
             }
 
-            string relative_path = local_path.Replace($"{local_dir}/", "");
+            string relative_path = local_path.Replace($"{local_dir}", "");
+
+            if(relative_path.StartsWith("/"))
+            {
+                relative_path = relative_path.TrimStart('/');
+            }
 
             if(remote_files.TryGetValue(relative_path, out var remote_info))
             {
@@ -396,16 +492,28 @@ public static class SftpUtils
         return(result, local_set.Count, ignored);
     }
 
-    public static void ServerDirSafeCheck(string path)
+    public static void ServerDirSafeCheck(SftpClient client, string path)
     {
-        var span  = path.AsSpan();
-        int index = span.LastIndexOf("/");
+        int index = 0;
 
-        var dir = span[..index].ToString();
-
-        if(!CLIENT.Exists(dir))
+        while(true)
         {
-            CLIENT.CreateDirectory(dir);
+            index++;
+
+            if(index >= path.Length)
+            {
+                break;
+            }
+
+            if(path[index] != '/')
+            {
+                continue;
+            }
+
+            if(!client.Exists(path[..index]))
+            {
+                client.CreateDirectory(path[..index]);
+            }
         }
     }
 
@@ -474,7 +582,7 @@ public static class SftpUtils
     {
         var tcs = new TaskCompletionSource<IEnumerable<SftpFile>?>();
 
-        if(!CLIENT.Exists(path))
+        if(!DEFAULT.Exists(path))
         {
             tcs.SetResult(null);
         }
