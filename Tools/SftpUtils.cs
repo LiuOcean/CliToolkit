@@ -231,6 +231,9 @@ public static class SftpUtils
 
                 using var pool = SftpPool.Get();
 
+                // 当 Windows 上传 Linux 时, 需要将路径中的 \ 替换为 /
+                server_path = server_path.Replace("\\", "/");
+                
                 ServerDirSafeCheck(pool.client, server_path);
 
                 pool.client.UploadFile(
